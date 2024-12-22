@@ -667,7 +667,16 @@
 	slot = "heartdrive"
 	var/revive_cost = 0
 	var/reviving = FALSE
-	var/cooldown = 0
+	/// Have we defibed someone this heal period? If so, do not heal past crit without an upgraded heart, as it is low on juice.
+	var/has_defibed = FALSE
+	/// How long we are on cooldown for
+	COOLDOWN_DECLARE(reviver_cooldown)
+	/// How long till we can try to defib again
+	COOLDOWN_DECLARE(defib_cooldown)
+	/// This check is an aditional minute delay applied to nuggeted IPCS, so they are not endlessly instantly reviving.
+	COOLDOWN_DECLARE(nugget_contingency)
+	/// The trigger when nuggeted is detected. Resets when revived. Prevents the cooldown from being applied again.
+	var/applied_nugget_cooldown = FALSE
 
 /obj/item/organ/internal/cyberimp/chest/reviver/hardened
 	name = "Hardened reviver implant"
@@ -681,20 +690,27 @@
 	if(cooldown > world.time || owner.suiciding) // don't heal while you're in cooldown!
 		return
 	if(reviving)
-		reviving = FALSE
-		if(owner.health <= HEALTH_THRESHOLD_CRIT + 10) //We do not want to leave them on the end of crit constantly.
-			addtimer(CALLBACK(src, PROC_REF(heal)), 30)
-			reviving = TRUE
-		if(owner.health > HEALTH_THRESHOLD_CRIT && owner.HasDisease(new /datum/disease/critical/shock(0)) && prob(15)) //We do not do an else, as we need them to cure shock inside this magic zone of 10 damage
-			for(var/datum/disease/critical/shock/S in owner.viruses)
-				S.cure()
-				revive_cost += 150
-				to_chat(owner, "<span class='notice'>You feel better.</span>")
-		if(!reviving)
-			return
-	cooldown = revive_cost + world.time
-	revive_cost = 0
-	reviving = TRUE
+		if(owner.stat != DEAD && reached_heal_threshold()) //Don't stop healing when they are dead.
+			COOLDOWN_START(src, reviver_cooldown, revive_cost)
+			reviving = FALSE
+			to_chat(owner, "<span class='notice'>Your reviver implant shuts down and starts recharging. It will be ready again in [DisplayTimeText(revive_cost)].</span>")
+			applied_nugget_cooldown = FALSE
+		else
+			addtimer(CALLBACK(src, PROC_REF(heal)), 3 SECONDS)
+		return
+	if(!COOLDOWN_FINISHED(src, reviver_cooldown) || owner.suiciding || !COOLDOWN_FINISHED(src, nugget_contingency)) // don't heal while you're in cooldown!
+		return
+	if(owner.health <= 0 || owner.stat == DEAD)
+		if(ismachineperson(owner))
+			if(!applied_nugget_cooldown && length(owner.bodyparts) <= 2)
+				COOLDOWN_START(src, nugget_contingency, 1 MINUTES)
+				applied_nugget_cooldown = TRUE
+				return
+		revive_cost = 0
+		reviving = TRUE
+		has_defibed = FALSE
+		to_chat(owner, "<span class='notice'>You feel a faint buzzing as your reviver implant starts patching your wounds...</span>")
+		COOLDOWN_START(src, defib_cooldown, 8 SECONDS) // 5 seconds after heal proc delay
 
 /obj/item/organ/internal/cyberimp/chest/reviver/proc/heal()
 	if(QDELETED(owner))
